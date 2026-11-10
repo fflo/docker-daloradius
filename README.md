@@ -138,12 +138,12 @@ Builds of the ``master`` branch that pass the smoke test are published to Docker
 
 ### Setup
 
-Publishing needs one repository secret:
+Publishing needs the repository secret ``DOCKERHUB_TOKEN``. The secret ``DOCKERHUB_USERNAME`` is optional and overrides the account name set in the workflow file:
 
 1. On Docker Hub, create a personal access token with the _Read & Write_ scope (_Account settings_, _Personal access tokens_).
-2. On GitHub, add it as the repository secret ``DOCKERHUB_TOKEN`` (_Settings_, _Secrets and variables_, _Actions_).
+2. On GitHub, add it as the repository secret ``DOCKERHUB_TOKEN`` (_Settings_, _Secrets and variables_, _Actions_). A Docker Hub password works as well, a token is safer.
 
-Without the secret the workflow still builds and tests, it only skips publishing. The Docker Hub repository, the account name and the PHP branch are set in the ``env`` section at the top of the workflow file.
+Without ``DOCKERHUB_TOKEN`` the workflow still builds and tests, it only skips publishing. The Docker Hub repository, the account name and the PHP branch are set in the ``env`` section at the top of the workflow file.
 
 The weekly run and Dependabot only work on the default branch of the repository, so ``master`` must be the default branch. GitHub disables scheduled workflows in repositories without any activity for 60 days. It sends an e-mail before doing so; re-enable the workflow on the _Actions_ tab in that case.
 
