@@ -20,4 +20,5 @@ if [[ -z "$RADIUS_DB_PORT" ]]; then
     export "RADIUS_DB_PORT=3306"
 fi
 
-"$@"
+# Replace the shell so that apache receives the container's stop signal
+exec "$@"
