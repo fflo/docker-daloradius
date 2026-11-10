@@ -1,0 +1,132 @@
+name: Docker image
+
+# Builds the image, runs the smoke test and, on the master branch, publishes the
+# result to Docker Hub. The weekly run rebuilds on the latest patch release of
+# the PHP base image, so PHP security releases reach Docker Hub without a commit.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Docker Hub repository and the account that owns the DOCKERHUB_TOKEN secret
+  IMAGE: fflo/daloradius
+  DOCKERHUB_USERNAME: fflo
+  # Branch of the official PHP image, see "PHP version" in README.md
+  PHP_VERSION: "8.4"
+  # Only builds of this branch are published
+  PUBLISH_BRANCH: master
+
+jobs:
+  docker:
+    name: Build, test and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository and daloRADIUS submodule
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image for testing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          pull: true
+          load: true
+          build-args: |
+            PHP_VERSION=${{ env.PHP_VERSION }}
+          tags: daloradius:test
+
+      - name: Smoke test
+        run: test/smoke-test.sh daloradius:test
+
+      - name: Determine versions
+        id: versions
+        run: |
+          php="$(docker run --rm --entrypoint php daloradius:test -r 'echo PHP_VERSION;')"
+          daloradius="$(sed -n "s/.*'DALORADIUS_VERSION'\] = '\([^']*\)'.*/\1/p" source/app/common/includes/version.php)"
+          if [[ ! "$php" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$daloradius" =~ ^[0-9][0-9A-Za-z.-]*$ ]]; then
+            echo "::error::Could not determine versions (PHP '$php', daloRADIUS '$daloradius')"
+            exit 1
+          fi
+          echo "php=$php" >> "$GITHUB_OUTPUT"
+          echo "daloradius=$daloradius" >> "$GITHUB_OUTPUT"
+          echo "daloRADIUS $daloradius on PHP $php" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Decide whether to publish
+        id: publish
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          enabled=false
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_REF" != "refs/heads/$PUBLISH_BRANCH" ]]; then
+            echo "Not a build of the $PUBLISH_BRANCH branch: the image was tested but is not published." >> "$GITHUB_STEP_SUMMARY"
+          elif [[ -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "::warning::The DOCKERHUB_TOKEN secret is not set, the image is not published."
+          else
+            enabled=true
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        if: steps.publish.outputs.enabled == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Image tags and labels
+        if: steps.publish.outputs.enabled == 'true'
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.versions.outputs.daloradius }}
+            type=raw,value=${{ steps.versions.outputs.daloradius }}-php${{ steps.versions.outputs.php }}
+
+      # Reuses the layers of the tested build for linux/amd64
+      - name: Build and publish
+        if: steps.publish.outputs.enabled == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            PHP_VERSION=${{ env.PHP_VERSION }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Summary
+        if: steps.publish.outputs.enabled == 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "Published:"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

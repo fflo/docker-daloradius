@@ -1,5 +1,8 @@
 .git
+.github
 .gitmodules
 README.md
 source/.git
 source/.github
+source/tests
+test

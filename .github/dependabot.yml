@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # New daloRADIUS commits: the pull request is built and smoke tested
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Actions used by the build workflow
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
