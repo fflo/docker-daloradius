@@ -2,7 +2,7 @@
 
 A [daloRADIUS](https://github.com/lirantal/daloradius) docker image configurable via environment variables.
 
-The image is built on the official ``php:8.4-apache`` image and installs daloRADIUS from the ``source`` submodule (currently version 2.4). It contains the web interfaces only: FreeRADIUS and the MariaDB database run elsewhere.
+The image is built on the official ``php:8.4-apache`` image and installs daloRADIUS from the ``source`` submodule (currently version 2.4). It contains the web interfaces only: FreeRADIUS and the MariaDB database run elsewhere. Configuration, ports and database handling are those of the Docker image of the daloRADIUS project, because the container is started by the same script.
 
 Ready-made images are published on Docker Hub as [``fflo/daloradius``](https://hub.docker.com/r/fflo/daloradius), see [Automated builds](#automated-builds).
 
@@ -14,26 +14,32 @@ docker pull fflo/daloradius
 
 ### Environment configuration
 
-| Variable name      | Description                                            | Default value |
-|:-------------------|:-------------------------------------------------------|:--------------|
-| ``RADIUS_DB_HOST`` | Hostname or address of the MariaDB server              | _error_       |
-| ``RADIUS_DB_PORT`` | Port of the MariaDB server                             | ``3306``      |
-| ``RADIUS_DB_NAME`` | Name of the radius database                            | _error_       |
-| ``RADIUS_DB_USER`` | Username for a user with access to the radius database | _error_       |
-| ``RADIUS_DB_PASS`` | Password for that user                                 | _error_       |
+| Variable name      | Alias              | Description                                            | Default value |
+|:-------------------|:-------------------|:-------------------------------------------------------|:--------------|
+| ``MYSQL_HOST``     | ``RADIUS_DB_HOST`` | Hostname or address of the MariaDB server              | _error_       |
+| ``MYSQL_PORT``     | ``RADIUS_DB_PORT`` | Port of the MariaDB server                             | ``3306``      |
+| ``MYSQL_DATABASE`` | ``RADIUS_DB_NAME`` | Name of the radius database                            | _error_       |
+| ``MYSQL_USER``     | ``RADIUS_DB_USER`` | Username for a user with access to the radius database | _error_       |
+| ``MYSQL_PASSWORD`` | ``RADIUS_DB_PASS`` | Password for that user                                 | _error_       |
 
-The variables that _error_ by default must be provided to the container on initialization, otherwise it exits with an error message.
+The variables that _error_ by default must be provided to the container on initialization, otherwise it exits with an error message. The aliases are the variable names of earlier versions of this repository; ``MYSQL_*`` wins when both are set.
 
-Saving the settings in the operators interface rewrites the configuration file inside the container with the values that are in effect at that moment. From then on that container no longer reads the database settings from the environment; recreate it to go back to the environment variables.
+Optional variables of the daloRADIUS start script work as well, for example ``PASSWORD_MIN_LENGTH``, ``PASSWORD_MAX_LENGTH``, ``DEFAULT_FREERADIUS_SERVER``, ``DEFAULT_FREERADIUS_PORT``, ``DEFAULT_CLIENT_SECRET``, the ``MAIL_*`` variables and the ``DALORADIUS_*`` variables for operator logins via LDAP. They are described in [README.docker.md](https://github.com/lirantal/daloradius/blob/master/README.docker.md) of the daloRADIUS project.
+
+The variables are written to the daloRADIUS configuration file when a container starts for the first time. To change them, recreate the container (``docker compose up -d`` does that when the environment changed).
 
 ### Ports
 
 | Port     | Interface                        |
 |:---------|:---------------------------------|
-| ``80``   | Operators (management) interface |
-| ``8000`` | Users (self-service) portal      |
+| ``80``   | Users (self-service) portal      |
+| ``8000`` | Operators (management) interface |
 
 You need to publish the ones you need. The image serves plain HTTP only; put a TLS terminating reverse proxy in front of it and do not expose the operators interface to untrusted networks.
+
+### Volume
+
+The start script keeps two marker files in ``/data`` that record that the configuration and the database were initialized. Mounting a volume there is optional.
 
 #### For example
 
@@ -41,51 +47,62 @@ You need to publish the ones you need. The image serves plain HTTP only; put a T
 IMAGE_NAME="fflo/daloradius"
 docker run  -itd \
     --name daloradius \
-    -e RADIUS_DB_HOST=mariadb \
-    -e RADIUS_DB_USER=freeradius \
-    -e RADIUS_DB_PASS=radpass \
-    -e RADIUS_DB_NAME=freeradius \
-    -p 8080:80 \
+    -e MYSQL_HOST=mariadb \
+    -e MYSQL_USER=freeradius \
+    -e MYSQL_PASSWORD=radpass \
+    -e MYSQL_DATABASE=freeradius \
+    -p 8080:8000 \
     "$IMAGE_NAME"
 ```
-This will create a container running detached with TTY, named ``daloradius`` from the image ``$IMAGE_NAME`` that accesses a MariaDB server with hostname ``mariadb`` (at the default port), as user ``freeradius`` with password ``radpass`` to the database named ``freeradius``, and that publishes the operators interface on the internal port ``80`` to the port ``8080``.
+This will create a container running detached with TTY, named ``daloradius`` from the image ``$IMAGE_NAME`` that accesses a MariaDB server with hostname ``mariadb`` (at the default port), as user ``freeradius`` with password ``radpass`` to the database named ``freeradius``, and that publishes the operators interface on the internal port ``8000`` to the port ``8080``.
 
-### Database initialization
+The same with docker compose:
 
-Scripts for initializing the database can be found in the ``contrib/db/`` directory of the daloRADIUS project, or in the ``/var/www/daloradius/contrib/db/`` directory of this image. Load them in this order:
+```yaml
+services:
+  daloradius:
+    image: fflo/daloradius
+    environment:
+      MYSQL_HOST: mariadb
+      MYSQL_USER: freeradius
+      MYSQL_PASSWORD: radpass
+      MYSQL_DATABASE: freeradius
+    volumes:
+      - ./data:/data
+    ports:
+      - "8080:8000"
+    restart: unless-stopped
+```
 
-| Script                                  | Content                                    |
-|:----------------------------------------|:-------------------------------------------|
-| ``fr3-mariadb-freeradius.sql``          | FreeRADIUS 3 tables                        |
-| ``mariadb-daloradius.sql``              | daloRADIUS tables and the default operator |
-| ``mariadb-daloradius-dictionaries.sql`` | Attribute dictionary                       |
+### Database
 
-The scripts are written for MariaDB, the only database daloRADIUS is tested with. MySQL rejects them in its default strict SQL mode.
+The container waits for the database server and then, before the web interfaces become available,
 
-The daloRADIUS script creates the operator ``administrator`` with the password ``radius``. Change that password right after the first login.
+* creates the daloRADIUS tables and the attribute dictionary if the database does not contain them yet,
+* updates the ``operators`` table of databases created by earlier daloRADIUS versions (password hashing, LDAP and two-factor login columns).
 
-#### For example
+Back up the database before you start a new version of the image on it. Further scripts for changes introduced by newer daloRADIUS versions are in ``/var/www/daloradius/contrib/db/migrations/`` and are applied by hand; README.docker.md of the daloRADIUS project says which one is needed for which feature.
 
-Say you have a MariaDB container that serves as a datastore for a FreeRADIUS installation, in that case you can initialize the database with these commands.
+The FreeRADIUS tables are not created, FreeRADIUS normally does that itself. If they are missing, load ``/var/www/daloradius/contrib/db/fr3-mariadb-freeradius.sql`` into the database before the first start:
 
 ```bash
-DR_CONTAINER_NAME="daloradius"
 DB_CONTAINER_NAME="mariadb"
 DB_USER="freeradius"
 DB_PASS="radpass"
 DB_NAME="freeradius"
 
-# Skip fr3-mariadb-freeradius.sql if FreeRADIUS already created its tables
-for DB_SCRIPT in fr3-mariadb-freeradius.sql mariadb-daloradius.sql mariadb-daloradius-dictionaries.sql; do
-    docker exec "$DR_CONTAINER_NAME" \
-        cat "/var/www/daloradius/contrib/db/$DB_SCRIPT" |
-    docker exec -i "$DB_CONTAINER_NAME" \
-        mariadb \
-            "-u${DB_USER}" \
-            "-p${DB_PASS}" \
-            "$DB_NAME"
-done
+docker run --rm --entrypoint cat fflo/daloradius \
+    /var/www/daloradius/contrib/db/fr3-mariadb-freeradius.sql |
+docker exec -i "$DB_CONTAINER_NAME" \
+    mariadb \
+        "-u${DB_USER}" \
+        "-p${DB_PASS}" \
+        "$DB_NAME"
 ```
+
+The scripts are written for MariaDB, the only database daloRADIUS is tested with.
+
+A new database gets the operator ``administrator`` with the password ``radius``. Change that password right after the first login.
 
 ## Building
 
@@ -113,7 +130,7 @@ The build fails on PHP releases that predate the fixes for CVE-2026-109618 and C
 
 ### Testing
 
-``test/smoke-test.sh`` starts an image next to a temporary MariaDB container, loads the database scripts and checks that both interfaces answer and that the default operator can log in. It needs docker and curl and cleans up after itself.
+``test/smoke-test.sh`` starts an image next to a temporary MariaDB container and checks a new database, the ``RADIUS_DB_*`` aliases and the update of a database created by the image of 2024: both interfaces must answer and the default operator must be able to log in. It needs docker and curl and cleans up after itself.
 
 ```bash
 test/smoke-test.sh "$IMAGE_NAME"
@@ -153,11 +170,17 @@ Dependabot (``.github/dependabot.yml``) opens pull requests for new daloRADIUS c
 
 To move to another PHP branch, change ``PHP_VERSION`` in the workflow file and the default of the build argument in the ``Dockerfile``.
 
-## Upgrading from earlier versions of this image
+## Upgrading
 
-Earlier versions were based on Ubuntu 16.04 with PHP 7.0 and daloRADIUS 0.9-9. Neither receives security fixes any more, so this is a replacement rather than an in-place update:
+### From the Docker Hub image published before November 2026
 
-* daloRADIUS 2.4 uses a newer database schema. Back up the database first, then follow the daloRADIUS upgrade notes and apply the relevant scripts from ``contrib/db/migrations/`` before using an existing database with this image.
+That image used the ``MYSQL_*`` variables, the ports and the ``/data`` volume of the Docker image of the daloRADIUS project. The current image accepts the same, so the compose file can stay as it is. Back up the database first: on the first start the ``operators`` table is updated as described under [Database](#database). The smoke test covers this upgrade with a database schema of October 2024.
+
+### From the 2018 state of this repository
+
+The ``oldstable`` branch (Ubuntu 16.04, PHP 7.0, daloRADIUS 0.9-9) receives no security fixes any more.
+
+* The ``RADIUS_DB_*`` variables still work.
+* The operators interface moved from port ``80`` to port ``8000``; port ``80`` now serves the users portal, which used to be a sub directory. Port ``443`` is no longer exposed, it never served TLS.
 * daloRADIUS is installed in ``/var/www/daloradius`` instead of ``/var/www/html``.
-* The users portal has its own port (``8000``) instead of a sub directory of the operators interface.
-* Port ``443`` is no longer exposed, it never served TLS.
+* The database schema of daloRADIUS 0.9-9 is not updated automatically. Back up the database and follow the upgrade notes of the daloRADIUS project before using it with this image.
